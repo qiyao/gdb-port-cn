@@ -1,0 +1,365 @@
+\documentclass[cjk]{beamer}  % 使用Beamer包
+%\hypersetup{pdfpagemode=FullScreen}
+\usepackage{CJK}   % 中文环境
+\usepackage{indentfirst}
+%\usepackage{beamerthemesplit}
+
+\usepackage{makeidx}
+%\usepackage[dvipdfm,CJKbookmarks,bookmarks=true,bookmarksnumbered=true]{hyperref}
+%\usepackage[CJKbookmarks,bookmarks=true,bookmarksnumbered=true]{hyperref}
+\usepackage{listings}
+
+
+\hypersetup{colorlinks, linkcolor=blue, citecolor=blue,
+    urlcolor=blue,
+    plainpages=flase,
+    pdfcreator=tex,
+    bookmarksopen=true,
+    pdfhighlight=/P,
+    pdfauthor={Yao Qi <qiyaoltc@gmail.com>},
+    pdfcreator={cTeX},
+%    pdftitle={iptables 入门},
+%    pdfkeywords={iptables 入门 Rae szlug},
+    pdfstartview=FitH,
+    pdfpagemode=UseOutlines,%UseOutlines, %None, FullScreen, UseThumbs
+}
+
+%\usepackage[all,bottom]{draftcopy}
+%\draftcopyName{Copyright by Rae <crquan@gmail.com>, 2006}{50}
+%\draftcopySetGrey{0.8} \draftcopyPageTransform{55 rotate}
+%\draftcopyPageX{80}\draftcopyPageY{-25}
+
+\lstset{
+  basicstyle=\tiny,          % print whole listing small
+  showstringspaces=false,
+  numbers=left,
+  numberstyle=\tiny,
+  % labelstep=1,
+  % commentstyle=\textsl,
+  keywordstyle=\color{green}\bfseries\underbar,     % underlined bold red keywords
+  identifierstyle={},         % nothing happens to other identifiers
+  commentstyle=\mdseries\color{blue}, % white comments
+  stringstyle=\color{red}\ttfamily}      % typewriter type for strings
+% stringspaces=false}         % no special string spaces
+
+
+
+%\usetheme{Madrid}  % 采用的主题
+\usetheme{Warsaw}
+%\usetheme{Rochester}
+%\usetheme{Berkeley}
+%\usetheme{PaloAlto}
+%\usetheme{Montpellier}
+%\usetheme{Berlin}
+%\usetheme{Ilmenau}
+%\usetheme{Dresden}
+
+%\usecolortheme{albatross} % 采用的配色。
+%\usecolortheme{beaver} white background
+%\usecolortheme{beetle}
+%\usecolortheme{dolphin}
+%\usecolortheme{fly}
+%\usecolortheme{lily}
+
+%\useoutertheme{tree}
+
+\usefonttheme{structureitalicserif}
+
+\begin{document}
+\begin{CJK}{UTF8}{gbsn}
+
+\title{移植GDB的一些思路}
+\author{\href{mailto:qiyaoltc@gmail.com}{齐尧}}
+\date{\today}
+
+% 生成上面定义的"\title", "\author", "\date"等信息
+\frame{\titlepage}
+
+
+% 生成目录菜单
+\section{目录及流程}
+\frame{
+    \tableofcontents
+}
+
+\section{Two kinds of GDB}
+
+\begin{frame}
+  \frametitle{Two parts of GDB}
+  \begin{columns}
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{Bare mental or ELF}
+        \begin{itemize}
+        \item breakpoint, software single step, disasembly,
+        \item inferior call, \texttt{dwarf2\_frame\_init\_reg},
+        \item prologue analyzer, frame unwinding by prologue, skip prologue,
+        \item epilogue analysis/detection
+        \item register type, register group
+        \item longjmp target
+
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+
+
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{on Linux or ucLinux}
+        \begin{itemize}
+        \item stub prologue analyzer,
+        \item signal trampoline unwinding,
+        \item next pc of syscall (rt\_sigreturn, sigreturn)
+        \item thread local storage
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+  \end{columns}
+\end{frame}
+
+\section{Bare mental or ELF}
+
+\subsection{breakpoint}
+\frame{
+  \frametitle{breakpoint}
+  \begin{itemize}
+  \item A special instruction or an illegal instruction
+  \end{itemize}
+
+%  \lstinputlisting[language=C,caption={simple-debugger.c},
+%  firstline=10,lastline=36,
+%  captionpos={b},label={listing:introduction:simple-debugger}]
+%  {../../book/introduction/simple-debugger.c}
+
+}
+
+\subsection{software single step}
+\frame{
+  \frametitle{software single step}
+  \begin{itemize}
+  \item Insert breakpoint at the \textbf{next} instruction of \texttt{pc}
+  \item Decode every instruction, and compute the \textbf{next} instruction of \texttt{pc}
+  \end{itemize}
+}
+    
+\subsection{inferior call}
+\frame{
+  \frametitle{inferior call}
+
+  \begin{columns}
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{Widely used}
+        \begin{itemize}
+        \item GDB 主动在target运行target函数
+        \item \texttt{p func1()}
+        \item allocate memory on target (call \texttt{malloc})
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{GDB需要知道}
+        \begin{itemize}
+        \item 函数的参数类型和返回类型
+        \item 每个参数应该放在的位置 （寄存器 还是 stack）
+        \item 返回值的位置 （寄存器 还是 stack）
+        \item pass by value or pass by reference? \texttt{struct}
+        \item alignment on passing stack
+        \item \texttt{vararg}
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+  \end{columns}
+}
+
+\frame{
+  \frametitle{inferior call in gdb}
+  \begin{table}
+    \begin{tabular}{|l|l|l|} \hline
+      GDB hook&输入&作用\\ \hline
+      \tiny\textbf{arch}\texttt{\_push\_dummy\_call}&\tiny type parameter and return.&\tiny 根据ABI把参数放到应该放的地方\\&\tiny param value&\\ \hline
+
+      \tiny\textbf{arch}\texttt{\_return\_value}&\tiny 返回值类型&\tiny 根据ABI从正确位置取得返回值\\ \hline
+
+      \tiny\textbf{arch}\texttt{\_frame\_align}&&\tiny frame alignment\\ \hline
+
+      \tiny\textbf{arch}\texttt{\_value\_to\_register}&& \tiny 寄存器和\texttt{Value}之间的转换\\
+      \tiny\textbf{arch}\texttt{\_register\_to\_value}&&\\ \hline
+      \tiny\textbf{arch}\texttt{\_push\_dummy\_id} &&\tiny 建立一个dummy \texttt{frame id}\\ \hline
+    \end{tabular}
+  \end{table}
+
+}
+
+\subsection{prologue analyzer}
+\frame{
+  \frametitle{prologue analyzer}
+  
+  prologue analyzer 干了两件事情
+  \begin{table}
+    \begin{tabular}{|l|l|} \hline
+      \tiny prologue 在哪里结束？& \tiny 函数体的起始位置。\\ \hline
+      \tiny prologue 都干了写什么？& \tiny 寄存器保存在哪里，特别是返回地址，\texttt{sp}, \texttt{fp} 保存在哪里\\ \hline
+    \end{tabular}
+  \end{table}
+
+  prologue analyzer 的作用
+  \begin{itemize}
+  \item 如果有\textbf{DWARF}信息，GDB会用\textbf{DWARF}进行 frame unwinding (主要是 \texttt{.debug\_frame} section)
+  \item 在没有\textbf{DWARF}信息的情况，GDB会分析函数的prologue，来进行frame unwinding。
+  \item 为了正确解释\textbf{DWARF}的指令，GDB也需要知道函数体的起始位置。比如 \texttt{break foo}的时候。\textbf{arch}\texttt{\_skip\_prologue}。
+  \end{itemize}
+}
+
+\frame{
+  \frametitle{frame unwinding by prologue}
+
+  \begin{itemize}
+  \item 在知道了在prologue中，寄存器都保存在了什么位置，
+  \item unwind frame的时候，用frame N的寄存器内容，去计算frame N+1 的寄存器内容
+  \end{itemize}
+
+}
+
+\subsection{epilogue detection}
+\frame{
+  \frametitle{epilogue detection}
+
+  \begin{itemize}
+    \item \tiny 当使用watchpoint监视一个local variable的时候，gdb需要注意scope。（如果是全局变量，不需要检查scope的）
+    \item \tiny 当程序运行到epilogue的时候，这个时候没有办法知道epilogue 代码的scope，gdb就会错误的把watchpoint删除
+    \item \tiny 通过 \textbf{arch}\texttt{\_in\_function\_epilogue\_p} 知道当前程序是否在epilogue。输入就是\texttt{pc}，通过分析指令，看是否是在epilogue。
+  \end{itemize}
+
+
+  \lstinputlisting[language=C,caption={epilogue},captionpos={b},
+  label={listing:epilogue}]
+  {code/in_function_epilogue_p.c}
+}
+
+
+\subsection{longjmp}
+\frame{
+  \frametitle{\texttt{longjmp}}
+
+  \begin{itemize}
+    \item \tiny \texttt{longjmp} 应该跳回到\texttt{setjmp} 的位置，但是肯定不是一条指令实现的
+    \item \tiny GDB需要知道它们之间的协议，正确的让程序停止在\texttt{setjmp} 的位置
+    \item \tiny \textbf{arch}\texttt{\_get\_longjmp\_target}
+  \end{itemize}
+
+  \lstinputlisting[language=C,caption={foo\_get\_longjmp\_target},captionpos={b},
+  label={listing:longjmp}]
+  {code/longjmp_target.c}
+}
+\section{Linux or ucLinux}
+
+\subsection{stub prologue analyzer}
+\frame{
+  \frametitle{stub prologue analyzer}
+
+  \begin{overprint}
+
+    \begin{block}{Background}
+      \begin{itemize}
+      \item 在调用共享库函数的时候需要有\texttt{.plt .got}的支持
+      \item \texttt{bl malloc@plt}.  Every time, in plt stub, code loads target address of \texttt{malloc}, and then jump to it.
+      \item For the first time, \texttt{dynamic linker} is loaded to resolves the address of \texttt{malloc}, and update target address of \texttt{malloc}
+      \end{itemize}
+    \end{block}
+
+    \begin{block}{GDB doesn't show details above}
+      \begin{itemize}
+       \item 当用\texttt{next}命令，GDB会让程序运行到下一行，但是会跨过函数调用。
+       \item 当程序在plt stub的时候，GDB必须知道当前程序在 inner frame。GDB不知道的话，就会让程序停下来。
+       \item GDB需要有一个特殊的frame unwinder for stub
+      \end{itemize}
+    \end{block}
+
+  \end{overprint}
+
+}
+
+\frame{
+  \frametitle{stub frame unwinder}
+  \lstinputlisting[language=C,caption={stub frame unwinder},captionpos={b},
+  label={listing:stub}]
+  {code/stub_frame_unwinder.c}
+}
+
+
+\subsection{signal trampoline frame unwinding}
+\frame{
+  \frametitle{signal trampoline frame unwinding}
+
+  \begin{itemize}
+    \item GDB已经有了很好的infrastructure对signal trampoline frame unwinding支持。
+    \item 每个port需要定义和自己的signal trampoline匹配的instruction pattern。参见 \texttt{arm-linux-tdep.c:struct tramp\_frame arm\_linux\_rt\_sigreturn\_tramp\_frame}
+    \item 而且还要从kernel的代码中看出，当在 signal trampoline frame的时候，\texttt{struct rt\_sigframe} 所在位置。一般都是一个基于\texttt{sp}的偏移。参见 \texttt{arm-linux-tdep.c:arm\_linux\_sigreturn\_init}
+  \end{itemize}
+
+}
+
+
+
+\frame{
+  \frametitle{}
+
+
+}
+
+\subsection{next pc of syscall}
+
+\begin{frame}
+  \frametitle{next pc of syscall}
+  \begin{columns}
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{Next pc}
+        \begin{itemize}
+        \item 在实现\texttt{software single step}的时候已经实现完了
+        \item syscall的下一条指令地址不一定是 pc + 4，比如 \texttt{sigreturn} or \texttt{rt\_sigreturn}。
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+
+
+    \column{5cm}
+    \begin{overprint}
+
+      \begin{block}{GDB中实现}
+        \begin{itemize}
+        \item 没有相应的GDB hook，但是MIPS和ARM有类似的实现。
+        \item 在计算 next pc的函数中，考虑系统调用指令。查看系统调用的规范，知道系统调用号，如果是\texttt{sigreturn} or \texttt{rt\_sigreturn}，从规范指定的寄存器中读出下一条指令的地址。
+        \end{itemize}
+      \end{block}
+
+    \end{overprint}
+  \end{columns}
+\end{frame}
+
+\subsection{thread local storage}
+\frame{
+  \frametitle{thread local storage}
+}
+
+
+\section{End}
+\frame{
+  \frametitle{End}
+}
+
+\end{CJK}
+\end{document}
